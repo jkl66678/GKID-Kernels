@@ -17,7 +17,7 @@ sudo timedatectl set-timezone "$TIMEZONE" || export TZ="$TIMEZONE"
 
 RELEASE="$(date +v%y.%m.%d)${RUN_NUM}"
 
-mkdir -p $RELEASE_DIR
+mkdir -p "$RELEASE_DIR"
 
 GKI_RELEASES_REPO="https://github.com/ahmed-alnassif/GKID-Kernels"
 AK3_ZIP_NAME="$KERNEL_NAME-VARIANT-REL-KVER.zip"
@@ -26,7 +26,23 @@ KSRC="$WORKDIR/ksrc"
 KERNEL_PATCHES="$WORKDIR/kernel-patches"
 PATCHES_DIR="$WORKDIR/patches"
 
-source $WORKDIR/functions.sh
+source "$WORKDIR/functions.sh"
+
+# ===== pahole 硬校验（修复 pahole not available）=====
+ensure_pahole() {
+  if ! command -v pahole >/dev/null 2>&1; then
+    log "pahole not found, installing..."
+    build_and_install_pahole || true
+    # 把常见安装路径补进 PATH
+    export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
+  fi
+  if ! command -v pahole >/dev/null 2>&1; then
+    error "pahole still not in PATH=$PATH"
+    find / -name "pahole" -type f 2>/dev/null | head -20
+    return 1
+  fi
+  pahole --version
+}
 
 if kernel_version_eq "$KERNEL_VERSION" "6.1"; then
   if [ "$NH" = "true" ]; then
@@ -39,15 +55,15 @@ else
 fi
 
 ANDROID_RELEASE="$(android_release_for_version "$KERNEL_VERSION")"
-echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-echo "ANDROID_RELEASE=$ANDROID_RELEASE" >> $GITHUB_ENV
-echo "KERNEL_SOURCE_REPO=$(simplify_gh_url "$KERNEL_REPO")" >> $GITHUB_ENV
-echo "KERNEL_SOURCE_BRANCH=$KERNEL_BRANCH" >> $GITHUB_ENV
+echo "KERNEL_VERSION=$KERNEL_VERSION" >> "$GITHUB_ENV"
+echo "ANDROID_RELEASE=$ANDROID_RELEASE" >> "$GITHUB_ENV"
+echo "KERNEL_SOURCE_REPO=$(simplify_gh_url "$KERNEL_REPO")" >> "$GITHUB_ENV"
+echo "KERNEL_SOURCE_BRANCH=$KERNEL_BRANCH" >> "$GITHUB_ENV"
 
-echo "RELEASE_REPO=$(simplify_gh_url "$GKI_RELEASES_REPO")" >> $GITHUB_ENV
-echo "KERNEL_NAME=${KERNEL_NAME}${RUN_NUM}" >> $GITHUB_ENV
-echo "RELEASE_NAME=$KERNEL_NAME $RELEASE" >> $GITHUB_ENV
-echo "RELEASE=$RELEASE" >> $GITHUB_ENV
+echo "RELEASE_REPO=$(simplify_gh_url "$GKI_RELEASES_REPO")" >> "$GITHUB_ENV"
+echo "KERNEL_NAME=${KERNEL_NAME}${RUN_NUM}" >> "$GITHUB_ENV"
+echo "RELEASE_NAME=$KERNEL_NAME $RELEASE" >> "$GITHUB_ENV"
+echo "RELEASE=$RELEASE" >> "$GITHUB_ENV"
 
 BUILD_LOGS="$RELEASE_DIR/build.log"
 exec > >(tee -a "$BUILD_LOGS") 2>&1
@@ -64,12 +80,12 @@ else
   git clone -q --depth=1 "$KERNEL_REPO" -b "$KERNEL_BRANCH" "$KSRC"
 fi
 
-cd $KSRC
+cd "$KSRC"
 LINUX_VERSION=$(make kernelversion)
 LINUX_VERSION_CODE=${LINUX_VERSION//./}
 DEFCONFIG_FILE=$(find ./arch/arm64/configs -name "$KERNEL_DEFCONFIG")
-echo "LINUX_VERSION=$LINUX_VERSION" >> $GITHUB_ENV
-cd $WORKDIR
+echo "LINUX_VERSION=$LINUX_VERSION" >> "$GITHUB_ENV"
+cd "$WORKDIR"
 
 log "Setting Kernel variant"
 case "$KSU" in
@@ -99,7 +115,7 @@ clone_susfs 5
 cd "$SUSFS_DIR"
 git log --pretty=format:"- [%h](https://${SUSFS_URL#https://}/commit/%H) %s" -5 "$SUSFS_BRANCH" \
 > "$RELEASE_DIR/susfs_changelog-${KERNEL_VERSION}.txt"
-cd ..
+cd "$WORKDIR"
 
 if kernel_version_eq "$KERNEL_VERSION" "6.1"; then
   generate_gh_changelog "ahmed-alnassif/GKI-Duchamp-6.1" "$KERNEL_BRANCH" 10 "$RELEASE_DIR/android_kernel-6.1_changelog.txt"
@@ -116,7 +132,7 @@ CLANG_BIN="$WORKDIR/neutron-clang/bin"
 mkdir -p "$WORKDIR/neutron-clang"
 cd "$WORKDIR/neutron-clang"
 bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
-cd $OLDPWD
+cd "$WORKDIR"
 if [ ! -d "$CLANG_BIN" ]; then
     error "Clang not found in ${CLANG_BIN}."
     exit 1
@@ -129,8 +145,6 @@ export CCACHE_DIR="$HOME/.ccache"
 export CCACHE_BASEDIR="$WORKDIR"
 export CCACHE_NOHARDLINK=true
 export CCACHE_COMPILERCHECK=content
-export CC="ccache clang"
-export CXX="ccache clang++"
 
 ccache --zero-stats
 ccache --max-size=5G
@@ -140,12 +154,12 @@ ccache --set-config=base_dir="$WORKDIR"
 ccache --set-config=compiler_check=content
 
 COMPILER_STRING=$(clang -v 2>&1 | head -n 1 | sed 's/(https..*//' | sed 's/ version//')
-echo "COMPILER_STRING=$COMPILER_STRING" >> $GITHUB_ENV
+echo "COMPILER_STRING=$COMPILER_STRING" >> "$GITHUB_ENV"
 
-cd $KSRC
+cd "$KSRC"
 
 echo "::group::[+] pahole installation"
-build_and_install_pahole
+ensure_pahole || { error "pahole unavailable, aborting"; exit 1; }
 echo "::endgroup::"
 
 echo "::group::[+] Applied patches"
@@ -157,10 +171,8 @@ if ! kernel_version_eq "$KERNEL_VERSION" "6.1"; then
   cleanup_abi_gki_protected_exports
 fi
 
-
 log "Applying BBRv3 patch"
-apply_patch_file $KERNEL_PATCHES/bbrv3/bbrv3.patch
-
+apply_patch_file "$KERNEL_PATCHES/bbrv3/bbrv3.patch"
 
 if kernel_version_lt "$KERNEL_VERSION" "6.12"; then
   log "Applying NTSync patches..."
@@ -215,7 +227,6 @@ if susfs_included && [ "$KSU" = "BSU" ]; then
 
   clone_susfs
   apply_susfs_patches
-
 fi
 
 if [ "$KSU" = "KSU" ]; then
@@ -230,11 +241,9 @@ if [ "$KSU" = "KSU" ]; then
     clone_susfs
 
     cd KernelSU
-    #git reset --hard "61c6313"
     git reset --soft HEAD~1
     apply_patch_file "$PATCHES_DIR/0001-feat-avc-log-spoofing.patch"
     apply_patch_file "$PATCHES_DIR/0001-feat-add-multiple-managers.patch"
-    #apply_patch_file "$PATCHES_DIR/0001-feat-throne_tracker-offload-to-kthread.patch"
     apply_patch_file "$SUSFS_PATCHES/KernelSU/10_enable_susfs_for_ksu.patch"
     apply_patch_file "$PATCHES_DIR/0001-feat-escape-persistent_allow_list-to-kthread.patch"
     apply_patch_file "$PATCHES_DIR/0001-feat-supercalls-allow-userspace-to-pull-list-entries.patch"
@@ -247,9 +256,7 @@ if [ "$KSU" = "KSU" ]; then
     bash "KernelSU/kernel/setup.sh" "main"
 
     apply_susfs_patches
-
   fi
-
 fi
 
 if [ "$KSU_COMPAT" = "true" ]; then
@@ -260,7 +267,7 @@ if [ "$KSU_COMPAT" = "true" ]; then
   fi
 fi
 
-echo "VARIANT=$VARIANT" >> $GITHUB_ENV
+echo "VARIANT=$VARIANT" >> "$GITHUB_ENV"
 
 if [ "$NM" = "true" ]; then
   log "Applying NoMount"
@@ -285,18 +292,22 @@ fi
 
 export KBUILD_BUILD_USER="$USER"
 export KBUILD_BUILD_HOST="$HOST"
-export KBUILD_BUILD_TIMESTAMP=$(git -C $KSRC log -1 --format=%cd --date=format-local:'%a %b %d %T %z %Y')
-export KCFLAGS="-w"
+export KBUILD_BUILD_TIMESTAMP=$(git -C "$KSRC" log -1 --format=%cd --date=format-local:'%a %b %d %T %z %Y')
+
+# 定向抑制常见噪声，保留关键警告
+export KCFLAGS="-Wno-unused-but-set-variable -Wno-unused-variable -Wno-format"
 
 LINK_CACHE_PATH="/dev/shm/thinlto-cache"
-LINKER_SHIM="/tmp/clang-lto-linker"
+# 修复：shim 放到 WORKDIR，避免被后面 /tmp/* 清理删除
+LINKER_SHIM="$WORKDIR/clang-lto-linker"
+
 MAKE_ARGS=(
   LLVM=1
   LLVM_IAS=1
   ARCH=arm64
   CROSS_COMPILE=aarch64-linux-gnu-
   CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-  -j$(nproc --all)
+  -j"$(nproc --all)"
   O="$OUTDIR"
 )
 
@@ -322,27 +333,26 @@ MODULE_SYMVERS="$OUTDIR/Module.symvers"
 KMI_CHECK="$WORKDIR/py/kmi-check-6.x.py"
 
 echo "::group::[*] Generating config"
-make ${MAKE_ARGS[@]} "$KERNEL_DEFCONFIG"
+make "${MAKE_ARGS[@]}" "$KERNEL_DEFCONFIG"
 echo "::endgroup::"
 
 if susfs_included; then
-
   log "DEBUG: Checking defconfig for SUSFS"
   grep -i susfs ./arch/arm64/configs/gki_defconfig || error "SUSFS NOT FOUND in defconfig!"
   echo ""
 
   log "DEBUG: Checking .config for SUSFS"
-  grep CONFIG_KSU_SUSFS $OUTDIR/.config || error "SUSFS NOT ENABLED in .config!"
-  grep CONFIG_KSU_SUSFS_SUS_MAP $OUTDIR/.config || error "SUSFS_SUS_MAP not enabled!"
+  grep CONFIG_KSU_SUSFS "$OUTDIR/.config" || error "SUSFS NOT ENABLED in .config!"
+  grep CONFIG_KSU_SUSFS_SUS_MAP "$OUTDIR/.config" || error "SUSFS_SUS_MAP not enabled!"
   echo ""
 
-  if grep -q "CONFIG_KSU_SUSFS" ./arch/arm64/configs/gki_defconfig && ! grep -q "CONFIG_KSU_SUSFS=y" $OUTDIR/.config; then
+  if grep -q "CONFIG_KSU_SUSFS" ./arch/arm64/configs/gki_defconfig && ! grep -q "CONFIG_KSU_SUSFS=y" "$OUTDIR/.config"; then
     warning "SUSFS in defconfig but not in .config - checking dependencies..."
     grep "depends on" $(find . -name "Kconfig" -exec grep -l "KSU_SUSFS" {} \;) 2>/dev/null || error "No dependency info found"
   fi
-
 fi
 
+# 提前退出分支，避免无谓地删目录/建 swap
 if [ "$TEST" = "yes" ]; then
   success "Pipeline test done"
   mkdir -p "$RELEASE_DIR"
@@ -350,7 +360,7 @@ if [ "$TEST" = "yes" ]; then
   exit 0
 fi
 
-if [[ $TODO == "defconfig" ]]; then
+if [[ "${TODO:-}" == "defconfig" ]]; then
   log "Copying defconfig"
   mkdir -p "$RELEASE_DIR"
   cp "$OUTDIR/.config" "$RELEASE_DIR/config-${VARIANT}.txt"
@@ -419,6 +429,9 @@ for dir in \
     fi
 done
 
+# 保护关键路径：ccache、pahole、工作目录
+success "Preserved: $CCACHE_DIR $(command -v pahole || echo 'pahole') $WORKDIR"
+
 sudo docker system prune -af --volumes 2>/dev/null || true
 sudo docker builder prune -af 2>/dev/null || true
 sudo docker image prune -af 2>/dev/null || true
@@ -437,7 +450,10 @@ if [ -f /mnt/swapfile ]; then
 fi
 
 warning "Creating 32GB swap"
-sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768 status=none
+if ! sudo fallocate -l 32G /swapfile 2>/dev/null; then
+  sudo rm -f /swapfile
+  sudo dd if=/dev/zero of=/swapfile bs=1M count=32768 status=none || warning "swap create failed"
+fi
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
@@ -456,31 +472,42 @@ echo "::endgroup::"
 
 set -eo pipefail
 echo "::group::[*] Building kernel"
-make ${MAKE_ARGS[@]} CC="ccache clang" CXX="ccache clang++"
+make "${MAKE_ARGS[@]}" CC="ccache clang" CXX="ccache clang++"
 echo "::endgroup::"
 set +eo pipefail
 
-cd $WORKDIR
+cd "$WORKDIR"
 
 log "Cloning anykernel from $(simplify_gh_url "$ANYKERNEL_REPO")"
-git clone -q --depth=1 $ANYKERNEL_REPO anykernel
+git clone -q --depth=1 "$ANYKERNEL_REPO" anykernel
 
 AK3_ZIP_NAME=${AK3_ZIP_NAME//REL/$RELEASE}
 sed -i \
   -e "s/kernel.string=.*/kernel.string=${KERNEL_NAME} ${RELEASE} ${LINUX_VERSION} ${VARIANT} by Ahmed Al-Nassif (ahmed-alnassif)/g" \
   -e "s/supported_kernel=\".*\"/supported_kernel=\"${KERNEL_VERSION}\"/g" \
-  $WORKDIR/anykernel/anykernel.sh
+  "$WORKDIR/anykernel/anykernel.sh"
 
 cd anykernel
 log "Zipping anykernel"
-if [ ! -f "$KERNEL_IMAGE" ];then
+if [ ! -f "$KERNEL_IMAGE" ]; then
   error "$KERNEL_IMAGE not found."
   exit 1
 fi
 cp "$KERNEL_IMAGE" .
-zip -r9 "$WORKDIR/$AK3_ZIP_NAME" ./*
-cd $OLDPWD
+zip -r -9 -q -X "$WORKDIR/$AK3_ZIP_NAME" ./*
+cd "$WORKDIR"
 
-echo "BASE_NAME=$KERNEL_NAME-$VARIANT" >> $GITHUB_ENV
-mkdir -p $RELEASE_DIR
-mv $WORKDIR/*.zip $RELEASE_DIR
+# zip 完整性检查
+unzip -t "$WORKDIR/$AK3_ZIP_NAME" > /dev/null || { error "Zip integrity check failed"; exit 1; }
+success "Zip OK: $(du -h "$WORKDIR/$AK3_ZIP_NAME" | cut -f1)"
+
+echo "BASE_NAME=$KERNEL_NAME-$VARIANT" >> "$GITHUB_ENV"
+mkdir -p "$RELEASE_DIR"
+shopt -s nullglob
+zips=("$WORKDIR"/*.zip)
+if [ ${#zips[@]} -eq 0 ]; then
+  error "No zip generated"
+  exit 1
+fi
+mv "${zips[@]}" "$RELEASE_DIR"
+shopt -u nullglob
