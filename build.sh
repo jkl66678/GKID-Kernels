@@ -295,7 +295,8 @@ export KBUILD_BUILD_HOST="$HOST"
 export KBUILD_BUILD_TIMESTAMP=$(git -C "$KSRC" log -1 --format=%cd --date=format-local:'%a %b %d %T %z %Y')
 
 # 定向抑制常见噪声，保留关键警告
-export KCFLAGS="-Wno-unused-but-set-variable -Wno-unused-variable -Wno-format"
+# -Wno-constant-logical-operand: 修复 BBRv3 补丁在 bbr_param() 宏展开为常量时触发的 -Werror
+export KCFLAGS="-Wno-unused-but-set-variable -Wno-unused-variable -Wno-format -Wno-constant-logical-operand"
 
 LINK_CACHE_PATH="/dev/shm/thinlto-cache"
 # 修复：shim 放到 WORKDIR，避免被后面 /tmp/* 清理删除
