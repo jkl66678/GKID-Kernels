@@ -289,20 +289,20 @@ if [ "${TODO:-kernel}" = "kernel" ]; then
   # 例如：6.1.177-android14-11-g36aba3c75f8c
   # ------------------------------------------------------------
   # 说明：
-  #   - <android_release> 如 android14（android_release_for_version 返回，需确保带 android 前缀）
-  #   - <kmi_generation>  是 KMI 代次号（0,1,2,...），不是内核版本号 6.1
-  #                       优先从源码 build.config.common / build.config.gki* 读取
+  #   - <android_release> 如 android14
+  #   - <kmi_generation>  是 KMI 代次号（0,1,2,...,11），不是内核版本号 6.1
+  #                       优先从源码 build.config.* 里的 KMI_GENERATION= 读取
   #   - 非 6.1 分支沿用 resolve_kernel_source 返回的 KERNEL_KMI（如 android13-5.10）
   # ============================================================
   if [ -n "${KERNEL_KMI:-}" ]; then
     # 非 6.1：resolve_kernel_source 已给出完整 KMI 名
     GKI_KMI="${KERNEL_KMI}"
   else
-    # ---- 解析 KMI Generation ----
+    # ---- 解析 KMI Generation（纯数字提取，避免复杂引号）----
     KMI_GEN=""
     for f in "$KSRC/build.config.common" "$KSRC/build.config.gki" "$KSRC/build.config.gki.aarch64"; do
       if [ -f "$f" ]; then
-        _v="$(grep -E '^[[:space:]]*KMI_GENERATION=' "$f" | head -n1 | cut -d= -f2 | tr -d ' "'\''")"
+        _v="$(grep -E '^[[:space:]]*KMI_GENERATION=' "$f" | head -n1 | grep -oE '[0-9]+' | head -n1)"
         if [ -n "$_v" ]; then
           KMI_GEN="$_v"
           break
@@ -313,7 +313,7 @@ if [ "${TODO:-kernel}" = "kernel" ]; then
     KMI_GENERATION="${KMI_GENERATION:-${KMI_GEN:-11}}"
 
     # ---- 解析 android 平台前缀 ----
-    # ANDROID_RELEASE 可能返回 "14" / "android14" / "Android14"，统一成 "androidNN"
+    # ANDROID_RELEASE 可能返回 "14" / "android14" / "Android14"，统一抽数字再补 android
     RELEASE_NUM="$(echo "$ANDROID_RELEASE" | grep -oE '[0-9]+' | head -n1)"
     if [ -z "$RELEASE_NUM" ]; then
       # 兜底：按内核版本推断
@@ -337,10 +337,9 @@ if [ "${TODO:-kernel}" = "kernel" ]; then
   config --set-str CONFIG_LOCALVERSION "$GKI_LOCALVERSION"
   config --disable CONFIG_LOCALVERSION_AUTO
 
-  # 彻底屏蔽 setlocalversion 追加的 "+"（兼容任意缩进/空格写法）
-  sed -i -E 's/^[[:space:]]*echo "\+"[[:space:]]*$/# echo "+" # disabled for GKI version/' scripts/setlocalversion
-  # 部分源码用 echo "+$scm_version" 形式，也一并处理
-  sed -i -E 's/echo "\+\$\{?scm_version\}?"/# echo "disabled"/g' scripts/setlocalversion || true
+  # 彻底屏蔽 setlocalversion 追加的 "+"（兼容任意缩进/空格，以及带 scm_version 的写法）
+  sed -i -E 's/^[[:space:]]*echo "[+][[:space:]]*"[[:space:]]*$/# echo "+" # disabled for GKI version/' scripts/setlocalversion
+  sed -i -E 's/echo "[+][$][{]?scm_version[}]?"/# echo "disabled"/g' scripts/setlocalversion || true
 fi
 
 export KBUILD_BUILD_USER="$USER"
