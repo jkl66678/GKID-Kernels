@@ -284,21 +284,23 @@ source "$WORKDIR/configs/gki_defconfig.sh"
 
 if [ "${TODO:-kernel}" = "kernel" ]; then
   # ============================================================
-  # 标准 Android GKI 内核版本号
-  # 格式：<linux_version>-<android_release>-<kmi_generation>-g<commit>
-  # 例如：6.1.177-android14-11-g36aba3c75f8c
+  # 完整 Android GKI 内核版本号
+  # 格式：<linux_ver>-<android_platform>-<kmi_gen>-g<commit>-ab<build_id>-<page_size>
+  # 例如：6.6.118-android15-8-gf72a02f47f4b-abogki551678766-4k
   # ------------------------------------------------------------
-  # 说明：
-  #   - <android_release> 如 android14
-  #   - <kmi_generation>  是 KMI 代次号（0,1,2,...,11），不是内核版本号 6.1
-  #                       优先从源码 build.config.* 里的 KMI_GENERATION= 读取
-  #   - 非 6.1 分支沿用 resolve_kernel_source 返回的 KERNEL_KMI（如 android13-5.10）
+  # 分段：
+  #   android15-8        ← KMI（平台+KMI generation）
+  #   gf72a02f47f4b      ← git commit (12位)
+  #   abogki551678766    ← Android Build ID
+  #   4k / 16k / 64k     ← page size
   # ============================================================
+
+  # ---- 1. KMI（含 android 平台 + KMI generation）----
   if [ -n "${KERNEL_KMI:-}" ]; then
-    # 非 6.1：resolve_kernel_source 已给出完整 KMI 名
+    # 非 6.1：resolve_kernel_source 已给出完整 KMI（如 android13-5.10）
     GKI_KMI="${KERNEL_KMI}"
   else
-    # ---- 解析 KMI Generation（纯数字提取，避免复杂引号）----
+    # 6.1 分支：从 build.config 读 KMI_GENERATION（数字），从 ANDROID_RELEASE 读平台版本
     KMI_GEN=""
     for f in "$KSRC/build.config.common" "$KSRC/build.config.gki" "$KSRC/build.config.gki.aarch64"; do
       if [ -f "$f" ]; then
@@ -309,14 +311,11 @@ if [ "${TODO:-kernel}" = "kernel" ]; then
         fi
       fi
     done
-    # 允许外部覆盖；最终兜底 11
     KMI_GENERATION="${KMI_GENERATION:-${KMI_GEN:-11}}"
 
-    # ---- 解析 android 平台前缀 ----
-    # ANDROID_RELEASE 可能返回 "14" / "android14" / "Android14"，统一抽数字再补 android
+    # ANDROID_RELEASE 可能是 "14" / "android14" / "Android14"，统一抽数字再补 android
     RELEASE_NUM="$(echo "$ANDROID_RELEASE" | grep -oE '[0-9]+' | head -n1)"
     if [ -z "$RELEASE_NUM" ]; then
-      # 兜底：按内核版本推断
       case "$KERNEL_VERSION" in
         6.1)  RELEASE_NUM="14" ;;
         5.10) RELEASE_NUM="12" ;;
@@ -330,14 +329,49 @@ if [ "${TODO:-kernel}" = "kernel" ]; then
     GKI_KMI="android${RELEASE_NUM}-${KMI_GENERATION}"
   fi
 
+  # ---- 2. git commit ----
   GKI_COMMIT="$(git -C "$KSRC" rev-parse --short=12 HEAD)"
-  GKI_LOCALVERSION="-${GKI_KMI}-g${GKI_COMMIT}"
+
+  # ---- 3. Android Build ID（abogki<N>）----
+  # 优先 AB_BUILD_ID 直接覆盖（如 AB_BUILD_ID=abogki551678766）
+  # 否则用 BUILD_NUMBER / GITHUB_RUN_NUMBER / RUN_NUM 拼 abogki<N>
+  # AB_BUILD_ID=""（空）则不插入该段
+  if [ "${AB_BUILD_ID+x}" = "x" ]; then
+    GKI_BUILD_ID="${AB_BUILD_ID}"
+  else
+    _build_num="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-${RUN_NUM:-$(date +%s)}}}"
+    GKI_BUILD_ID="abogki${_build_num}"
+  fi
+
+  if [ -n "$GKI_BUILD_ID" ]; then
+    GKI_BUILD_PART="-${GKI_BUILD_ID}"
+  else
+    GKI_BUILD_PART=""
+  fi
+
+  # ---- 4. Page size（从 .config 或 defconfig 读，兜底 -4k）----
+  PAGE_SIZE_SUFFIX=""
+  _cfg="$OUTDIR/.config"
+  [ -f "$_cfg" ] || _cfg="$KSRC/arch/arm64/configs/$KERNEL_DEFCONFIG"
+  if [ -f "$_cfg" ]; then
+    if grep -q '^CONFIG_ARM64_4K_PAGES=y' "$_cfg"; then
+      PAGE_SIZE_SUFFIX="-4k"
+    elif grep -q '^CONFIG_ARM64_16K_PAGES=y' "$_cfg"; then
+      PAGE_SIZE_SUFFIX="-16k"
+    elif grep -q '^CONFIG_ARM64_64K_PAGES=y' "$_cfg"; then
+      PAGE_SIZE_SUFFIX="-64k"
+    fi
+  fi
+  [ -z "$PAGE_SIZE_SUFFIX" ] && PAGE_SIZE_SUFFIX="-4k"
+
+  # ---- 最终拼接 ----
+  GKI_LOCALVERSION="-${GKI_KMI}-g${GKI_COMMIT}${GKI_BUILD_PART}${PAGE_SIZE_SUFFIX}"
 
   log "Setting GKI-style LOCALVERSION: ${GKI_LOCALVERSION}"
   config --set-str CONFIG_LOCALVERSION "$GKI_LOCALVERSION"
   config --disable CONFIG_LOCALVERSION_AUTO
 
-  # 彻底屏蔽 setlocalversion 追加的 "+"（兼容任意缩进/空格，以及带 scm_version 的写法）
+  # 彻底屏蔽 setlocalversion 追加的 "+"（兼容缩进/空格/带 scm_version 的写法）
   sed -i -E 's/^[[:space:]]*echo "[+][[:space:]]*"[[:space:]]*$/# echo "+" # disabled for GKI version/' scripts/setlocalversion
   sed -i -E 's/echo "[+][$][{]?scm_version[}]?"/# echo "disabled"/g' scripts/setlocalversion || true
 fi
