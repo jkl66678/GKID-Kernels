@@ -283,11 +283,25 @@ log "Applying configs..."
 source "$WORKDIR/configs/gki_defconfig.sh"
 
 if [ "${TODO:-kernel}" = "kernel" ]; then
-  LATEST_COMMIT_HASH=$(git rev-parse --short HEAD)
-  SUFFIX="${RUN_NUM}-${LATEST_COMMIT_HASH}"
-  config --set-str CONFIG_LOCALVERSION "-${KERNEL_NAME}${SUFFIX}"
+  # ============================================================
+  # 使用标准 Android GKI 风格的内核版本号
+  # 格式：<linux_version>-<kmi>-g<commit_hash>
+  # 例如：6.1.99-android14-6.1-g123456789abc
+  # ============================================================
+  if [ -n "${KERNEL_KMI:-}" ]; then
+    GKI_KMI="${KERNEL_KMI}"
+  else
+    # 6.1 分支未设置 KERNEL_KMI，回退为 <android_release>-<kernel_version>
+    GKI_KMI="${ANDROID_RELEASE}-${KERNEL_VERSION}"
+  fi
+
+  GKI_COMMIT="$(git -C "$KSRC" rev-parse --short=12 HEAD)"
+  GKI_LOCALVERSION="-${GKI_KMI}-g${GKI_COMMIT}"
+
+  log "Setting GKI-style LOCALVERSION: ${GKI_LOCALVERSION}"
+  config --set-str CONFIG_LOCALVERSION "$GKI_LOCALVERSION"
   config --disable CONFIG_LOCALVERSION_AUTO
-  sed -i 's/echo "+"/# echo "+"/g' scripts/setlocalversion
+  sed -i 's/^echo "+"/# echo "+"/g' scripts/setlocalversion
 fi
 
 export KBUILD_BUILD_USER="$USER"
